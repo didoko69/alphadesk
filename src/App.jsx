@@ -1,461 +1,362 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  ResponsiveContainer, LineChart, Line, AreaChart, Area,
-  XAxis, YAxis, ReferenceLine, Tooltip, CartesianGrid,
+  ResponsiveContainer, AreaChart, Area, LineChart, Line,
+  XAxis, YAxis, ReferenceLine, CartesianGrid, Tooltip,
 } from "recharts";
-import {
-  Activity, TrendingUp, TrendingDown, Minus, Cpu, Play, RotateCcw,
-  ShieldCheck, Crosshair, Gauge, ChevronRight, Zap,
-} from "lucide-react";
 
-/* ──────────────────────────────────────────────────────────────────────────
-   AlphaDesk — autonomous AI trading agent
-   Bitget AI × Crypto Trading Hackathon · Track: Autonomous Trading Agents
-   Synthetic-but-realistic feed · real TA math · Claude-powered reasoning ·
-   deterministic backtest of the same policy.
-   ────────────────────────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════
+   AlphaDesk · Autonomous Execution Terminal
+   Bitget AI × Crypto Trading Hackathon — Track: Autonomous Trading Agents
+   Visible reasoning · real TA math · Claude-reasoned · policy backtest
+   ══════════════════════════════════════════════════════════════════════════ */
 
-// ---------- market engine: regime-switching GBM with OHLC ----------
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+/* ---------- market engine ---------- */
+function mulberry32(a){return function(){a|=0;a=(a+0x6d2b79f5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+function gauss(r){let u=0,v=0;while(u===0)u=r();while(v===0)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function genCandles(seed,n=260,start=64000){
+  const r=mulberry32(seed);const c=[];let p=start,drift=0.0004,vol=0.011,reg=0,left=30;
+  for(let i=0;i<n;i++){
+    if(left--<=0){reg=Math.floor(r()*3);left=18+Math.floor(r()*34);drift=reg===0?0.0016:reg===1?-0.0015:0.0001;vol=reg===2?0.016:0.0105;}
+    const o=p,ret=drift+vol*gauss(r),cl=Math.max(1,o*(1+ret));
+    const hi=Math.max(o,cl)*(1+Math.abs(vol*gauss(r))*0.55),lo=Math.min(o,cl)*(1-Math.abs(vol*gauss(r))*0.55);
+    c.push({i,open:o,high:hi,low:lo,close:cl});p=cl;
+  }
+  return c;
 }
-function gauss(rng) {
-  let u = 0, v = 0;
-  while (u === 0) u = rng();
-  while (v === 0) v = rng();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+const sma=(a,p,i)=>{if(i<p-1)return null;let s=0;for(let k=i-p+1;k<=i;k++)s+=a[k];return s/p;};
+function ema(a,p){const k=2/(p+1);const o=[];let pr=a[0];for(let i=0;i<a.length;i++){pr=i===0?a[0]:a[i]*k+pr*(1-k);o.push(pr);}return o;}
+function rsiS(c,p=14){const o=new Array(c.length).fill(null);let g=0,l=0;for(let i=1;i<c.length;i++){const ch=c[i]-c[i-1],gg=Math.max(ch,0),ll=Math.max(-ch,0);if(i<=p){g+=gg;l+=ll;if(i===p){g/=p;l/=p;o[i]=100-100/(1+g/(l||1e-9));}}else{g=(g*(p-1)+gg)/p;l=(l*(p-1)+ll)/p;o[i]=100-100/(1+g/(l||1e-9));}}return o;}
+function macdS(c){const e12=ema(c,12),e26=ema(c,26),m=c.map((_,i)=>e12[i]-e26[i]),s=ema(m,9);return m.map((mm,i)=>({macd:mm,signal:s[i],hist:mm-s[i]}));}
+function atrS(c,p=14){const tr=c.map((x,i)=>i===0?x.high-x.low:Math.max(x.high-x.low,Math.abs(x.high-c[i-1].close),Math.abs(x.low-c[i-1].close)));const o=new Array(c.length).fill(null);let acc=0;for(let i=0;i<tr.length;i++){if(i<p){acc+=tr[i];if(i===p-1)o[i]=acc/p;}else o[i]=(o[i-1]*(p-1)+tr[i])/p;}return o;}
+function snapAt(c,i){const cl=c.map(x=>x.close);return{price:cl[i],rsi:rsiS(cl)[i],macd:macdS(cl)[i],atr:atrS(c)[i],ma20:sma(cl,20,i),ma50:sma(cl,50,i),trend:(()=>{const a=sma(cl,20,i),b=sma(cl,50,i);return a!=null&&b!=null?(a>b?"up":"down"):"flat";})()};}
+function policy(s){
+  if(s.ma20==null||s.ma50==null||s.rsi==null||!s.macd)return{side:null,conf:0};
+  const up=s.ma20>s.ma50,mu=s.macd.hist>0;let side=null,conf=0;
+  if(up&&mu&&s.rsi>48&&s.rsi<72){side="long";conf=0.5+Math.min(0.4,(s.macd.hist/s.price)*60)+(s.rsi<60?0.08:0);}
+  else if(!up&&!mu&&s.rsi<52&&s.rsi>28){side="short";conf=0.5+Math.min(0.4,(-s.macd.hist/s.price)*60)+(s.rsi>40?0.08:0);}
+  return{side,conf:Math.max(0,Math.min(0.97,conf))};
 }
-function genCandles(seed, n = 260, start = 64000) {
-  const rng = mulberry32(seed);
-  const candles = [];
-  let price = start;
-  let drift = 0.0004, vol = 0.011, regime = 0, regimeLeft = 30;
-  for (let i = 0; i < n; i++) {
-    if (regimeLeft-- <= 0) {
-      regime = Math.floor(rng() * 3); // 0 up, 1 down, 2 chop
-      regimeLeft = 18 + Math.floor(rng() * 34);
-      drift = regime === 0 ? 0.0016 : regime === 1 ? -0.0015 : 0.0001;
-      vol = regime === 2 ? 0.016 : 0.0105;
+function backtest(c,{riskPct=1,atrStop=1.5,rr=2,equity0=10000}={}){
+  let eq=equity0;const curve=[{i:0,equity:eq}];let pos=null;const trades=[];let peak=eq,mdd=0;
+  for(let i=55;i<c.length;i++){
+    const s=snapAt(c,i),cd=c[i];
+    if(pos){
+      const hs=pos.side==="long"?cd.low<=pos.stop:cd.high>=pos.stop;
+      const ht=pos.side==="long"?cd.high>=pos.tp:cd.low<=pos.tp;
+      let ex=hs?pos.stop:ht?pos.tp:null;
+      if(ex!=null){const dir=pos.side==="long"?1:-1;const pnl=(ex-pos.entry)*dir*pos.qty;eq+=pnl;trades.push({...pos,exit:ex,pnl,exitI:i});pos=null;peak=Math.max(peak,eq);mdd=Math.max(mdd,(peak-eq)/peak);curve.push({i,equity:eq});}
     }
-    const open = price;
-    const ret = drift + vol * gauss(rng);
-    const close = Math.max(1, open * (1 + ret));
-    const hi = Math.max(open, close) * (1 + Math.abs(vol * gauss(rng)) * 0.55);
-    const lo = Math.min(open, close) * (1 - Math.abs(vol * gauss(rng)) * 0.55);
-    candles.push({ i, open, high: hi, low: lo, close });
-    price = close;
+    if(!pos){const p=policy(s);if(p.side&&s.atr){const sd=atrStop*s.atr,entry=s.price,stop=p.side==="long"?entry-sd:entry+sd,tp=p.side==="long"?entry+sd*rr:entry-sd*rr,qty=(eq*(riskPct/100))/sd;pos={side:p.side,entry,stop,tp,qty,conf:p.conf,entryI:i};}}
   }
-  return candles;
+  const w=trades.filter(t=>t.pnl>0),gw=w.reduce((a,t)=>a+t.pnl,0),gl=Math.abs(trades.filter(t=>t.pnl<0).reduce((a,t)=>a+t.pnl,0));
+  const rets=curve.map((x,k)=>k===0?0:(x.equity-curve[k-1].equity)/curve[k-1].equity);
+  const mean=rets.reduce((a,b)=>a+b,0)/(rets.length||1);
+  const sd=Math.sqrt(rets.reduce((a,b)=>a+(b-mean)**2,0)/(rets.length||1))||1e-9;
+  return{equity:eq,curve,trades,winRate:trades.length?w.length/trades.length:0,profitFactor:gl?gw/gl:gw>0?99:0,maxDD:mdd,totalReturn:(eq-equity0)/equity0,sharpe:(mean/sd)*Math.sqrt(rets.length),count:trades.length};
 }
-
-// ---------- indicators ----------
-const sma = (a, p, i) => {
-  if (i < p - 1) return null;
-  let s = 0; for (let k = i - p + 1; k <= i; k++) s += a[k];
-  return s / p;
-};
-function emaSeries(a, p) {
-  const k = 2 / (p + 1); const out = []; let prev = a[0];
-  for (let i = 0; i < a.length; i++) {
-    prev = i === 0 ? a[0] : a[i] * k + prev * (1 - k);
-    out.push(prev);
-  }
-  return out;
-}
-function rsiSeries(closes, p = 14) {
-  const out = new Array(closes.length).fill(null);
-  let gain = 0, loss = 0;
-  for (let i = 1; i < closes.length; i++) {
-    const ch = closes[i] - closes[i - 1];
-    const g = Math.max(ch, 0), l = Math.max(-ch, 0);
-    if (i <= p) { gain += g; loss += l; if (i === p) { gain /= p; loss /= p; out[i] = 100 - 100 / (1 + gain / (loss || 1e-9)); } }
-    else { gain = (gain * (p - 1) + g) / p; loss = (loss * (p - 1) + l) / p; out[i] = 100 - 100 / (1 + gain / (loss || 1e-9)); }
-  }
-  return out;
-}
-function macdSeries(closes) {
-  const e12 = emaSeries(closes, 12), e26 = emaSeries(closes, 26);
-  const macd = closes.map((_, i) => e12[i] - e26[i]);
-  const signal = emaSeries(macd, 9);
-  return macd.map((m, i) => ({ macd: m, signal: signal[i], hist: m - signal[i] }));
-}
-function atrSeries(candles, p = 14) {
-  const tr = candles.map((c, i) => i === 0 ? c.high - c.low :
-    Math.max(c.high - c.low, Math.abs(c.high - candles[i - 1].close), Math.abs(c.low - candles[i - 1].close)));
-  const out = new Array(candles.length).fill(null);
-  let acc = 0;
-  for (let i = 0; i < tr.length; i++) {
-    if (i < p) { acc += tr[i]; if (i === p - 1) out[i] = acc / p; }
-    else out[i] = (out[i - 1] * (p - 1) + tr[i]) / p;
-  }
-  return out;
-}
-
-// snapshot of all signals at index i
-function snapshotAt(candles, i) {
-  const closes = candles.map((c) => c.close);
-  const rsi = rsiSeries(closes)[i];
-  const macd = macdSeries(closes)[i];
-  const atr = atrSeries(candles)[i];
-  const ma20 = sma(closes, 20, i);
-  const ma50 = sma(closes, 50, i);
-  const price = closes[i];
-  return { price, rsi, macd, atr, ma20, ma50,
-    trend: ma20 != null && ma50 != null ? (ma20 > ma50 ? "up" : "down") : "flat" };
-}
-
-// ---------- deterministic policy (this is what we backtest) ----------
-// Returns { side: 'long'|'short'|null, conf } from a snapshot.
-function policy(s) {
-  if (s.ma20 == null || s.ma50 == null || s.rsi == null || !s.macd) return { side: null, conf: 0 };
-  const up = s.ma20 > s.ma50;
-  const macdUp = s.macd.hist > 0;
-  let conf = 0, side = null;
-  if (up && macdUp && s.rsi > 48 && s.rsi < 72) { side = "long"; conf = 0.5 + Math.min(0.4, (s.macd.hist / s.price) * 60) + (s.rsi < 60 ? 0.08 : 0); }
-  else if (!up && !macdUp && s.rsi < 52 && s.rsi > 28) { side = "short"; conf = 0.5 + Math.min(0.4, (-s.macd.hist / s.price) * 60) + (s.rsi > 40 ? 0.08 : 0); }
-  return { side, conf: Math.max(0, Math.min(0.97, conf)) };
-}
-
-// ---------- backtest the policy ----------
-function backtest(candles, { riskPct = 1, atrStop = 1.5, rr = 2, equity0 = 10000 } = {}) {
-  let equity = equity0;
-  const curve = [{ i: 0, equity }];
-  let pos = null; const trades = []; let peak = equity, maxDD = 0;
-  for (let i = 55; i < candles.length; i++) {
-    const s = snapshotAt(candles, i);
-    const c = candles[i];
-    if (pos) {
-      const hitStop = pos.side === "long" ? c.low <= pos.stop : c.high >= pos.stop;
-      const hitTP = pos.side === "long" ? c.high >= pos.tp : c.low <= pos.tp;
-      let exit = null;
-      if (hitStop) exit = pos.stop; else if (hitTP) exit = pos.tp;
-      if (exit != null) {
-        const dir = pos.side === "long" ? 1 : -1;
-        const pnl = (exit - pos.entry) * dir * pos.qty;
-        equity += pnl;
-        trades.push({ ...pos, exit, pnl, exitI: i });
-        pos = null;
-        peak = Math.max(peak, equity);
-        maxDD = Math.max(maxDD, (peak - equity) / peak);
-        curve.push({ i, equity });
-      }
-    }
-    if (!pos) {
-      const p = policy(s);
-      if (p.side && s.atr) {
-        const stopDist = atrStop * s.atr;
-        const entry = s.price;
-        const stop = p.side === "long" ? entry - stopDist : entry + stopDist;
-        const tp = p.side === "long" ? entry + stopDist * rr : entry - stopDist * rr;
-        const riskAmt = equity * (riskPct / 100);
-        const qty = riskAmt / stopDist;
-        pos = { side: p.side, entry, stop, tp, qty, conf: p.conf, entryI: i };
-      }
-    }
-  }
-  const wins = trades.filter((t) => t.pnl > 0);
-  const grossW = wins.reduce((a, t) => a + t.pnl, 0);
-  const grossL = Math.abs(trades.filter((t) => t.pnl < 0).reduce((a, t) => a + t.pnl, 0));
-  const rets = curve.map((c, k) => k === 0 ? 0 : (c.equity - curve[k - 1].equity) / curve[k - 1].equity);
-  const mean = rets.reduce((a, b) => a + b, 0) / (rets.length || 1);
-  const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length || 1)) || 1e-9;
-  return {
-    equity, curve, trades,
-    winRate: trades.length ? wins.length / trades.length : 0,
-    profitFactor: grossL ? grossW / grossL : grossW > 0 ? 99 : 0,
-    maxDD, totalReturn: (equity - equity0) / equity0,
-    sharpe: (mean / sd) * Math.sqrt(rets.length),
-    count: trades.length,
-  };
-}
-
-// ---------- the Claude-powered agent (the demo showpiece) ----------
-async function agentDecide(snapshot, cfg) {
-  const sys =
-    "You are AlphaDesk, a disciplined crypto perpetual-futures trading agent. " +
-    "You only take trades with a clear technical edge and you ALWAYS define risk. " +
-    "Given a market snapshot, decide ONE action. Respond with ONLY a JSON object, no prose, no markdown fences. " +
-    'Schema: {"action":"open"|"flat","side":"long"|"short","confidence":0-1,' +
-    '"stop_atr_mult":number,"reward_risk":number,"thesis":"<=40 words, desk-trader voice"}. ' +
-    "If signals conflict or are weak, action='flat'.";
-  const u = `Snapshot for BTC-USDT perp:
-price=${snapshot.price.toFixed(1)}
-RSI14=${snapshot.rsi?.toFixed(1)}
-MACD_hist=${snapshot.macd?.hist?.toFixed(2)} (macd ${snapshot.macd?.macd?.toFixed(2)} vs signal ${snapshot.macd?.signal?.toFixed(2)})
-MA20=${snapshot.ma20?.toFixed(1)} MA50=${snapshot.ma50?.toFixed(1)} (trend ${snapshot.trend})
-ATR14=${snapshot.atr?.toFixed(1)}
-Account risk per trade=${cfg.riskPct}%. Decide.`;
-
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{ role: "user", content: `${sys}\n\n${u}` }],
-      }),
-    });
-    const data = await res.json();
-    const text = (data.content || []).map((b) => (b.type === "text" ? b.text : "")).join("");
-    const clean = text.replace(/```json|```/g, "").trim();
-    const j = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1));
-    return { ...j, _src: "claude" };
-  } catch (e) {
-    // deterministic fallback so the demo never dies on camera
-    const p = policy(snapshot);
-    return p.side
-      ? { action: "open", side: p.side, confidence: p.conf, stop_atr_mult: 1.5, reward_risk: 2,
-          thesis: `${p.side === "long" ? "Uptrend" : "Downtrend"} with MACD + RSI in agreement; taking the trend with defined risk.`, _src: "fallback" }
-      : { action: "flat", confidence: 0.3, thesis: "Signals in conflict — standing aside to protect capital.", _src: "fallback" };
+async function agentDecide(s,cfg){
+  const sys="You are AlphaDesk, a disciplined crypto perpetual-futures trading agent. You only take trades with a clear technical edge and ALWAYS define risk. Given a market snapshot, decide ONE action. Respond with ONLY a JSON object, no prose, no markdown fences. Schema: {\"action\":\"open\"|\"flat\",\"side\":\"long\"|\"short\",\"confidence\":0-1,\"stop_atr_mult\":number,\"reward_risk\":number,\"thesis\":\"<=34 words, terse desk-trader voice\"}. If signals conflict or are weak, action='flat'.";
+  const u=`BTC-USDT perp snapshot: price=${s.price.toFixed(1)} RSI14=${s.rsi?.toFixed(1)} MACDhist=${s.macd?.hist?.toFixed(2)} MA20=${s.ma20?.toFixed(1)} MA50=${s.ma50?.toFixed(1)} trend=${s.trend} ATR14=${s.atr?.toFixed(1)} risk=${cfg.riskPct}%/trade. Decide.`;
+  try{
+    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:`${sys}\n\n${u}`}]})});
+    const data=await res.json();
+    const txt=(data.content||[]).map(b=>b.type==="text"?b.text:"").join("");
+    const cl=txt.replace(/```json|```/g,"").trim();
+    const j=JSON.parse(cl.slice(cl.indexOf("{"),cl.lastIndexOf("}")+1));
+    return{...j,_src:"Claude"};
+  }catch(e){
+    const p=policy(s);
+    return p.side?{action:"open",side:p.side,confidence:p.conf,stop_atr_mult:1.5,reward_risk:2,thesis:`${p.side==="long"?"Uptrend":"Downtrend"} confirmed by MACD and RSI alignment — taking the trend with fixed, predefined risk.`,_src:"Local policy"}
+      :{action:"flat",confidence:0.3,thesis:"Signals are in conflict — standing aside to protect capital.",_src:"Local policy"};
   }
 }
+const f=(n,d=1)=>n==null?"——":Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pc=n=>n==null?"——":`${(n*100).toFixed(1)}%`;
 
-// ---------- small UI atoms ----------
-const fmt = (n, d = 1) => n == null ? "—" : Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-const pct = (n) => (n == null ? "—" : `${(n * 100).toFixed(1)}%`);
-
-function Stat({ label, value, tone }) {
-  const c = tone === "long" ? "var(--long)" : tone === "short" ? "var(--short)" : tone === "signal" ? "var(--signal)" : "var(--text)";
-  return (
-    <div style={{ borderColor: "var(--line)" }} className="border-l pl-3 py-1">
-      <div className="text-[10px] uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>{label}</div>
-      <div className="font-mono text-[15px] mt-0.5" style={{ color: c }}>{value}</div>
-    </div>
-  );
+/* ---------- atoms ---------- */
+function Field({k,v,tone,big}){
+  const c=tone==="up"?"var(--up)":tone==="dn"?"var(--dn)":tone==="ag"?"var(--agent)":"var(--text)";
+  return(<div>
+    <div className="lab">{k}</div>
+    <div className="num" style={{color:c,fontSize:big?20:14,marginTop:2}}>{v}</div>
+  </div>);
+}
+function Chip({k,v,tone}){
+  const c=tone==="up"?"var(--up)":tone==="dn"?"var(--dn)":"var(--muted)";
+  return(<span className="chip"><span style={{color:"var(--faint)"}}>{k}</span> <span className="num" style={{color:c}}>{v}</span></span>);
+}
+function Card({title,right,children,style}){
+  return(<section className="card" style={style}>
+    <header className="card-h"><span className="card-t">{title}</span>{right}</header>
+    <div className="card-b">{children}</div>
+  </section>);
 }
 
-export default function AlphaDesk() {
-  const [seed, setSeed] = useState(7);
-  const candles = useMemo(() => genCandles(seed), [seed]);
-  const cfg = { riskPct: 1 };
-  const idx = candles.length - 1;
-  const snap = useMemo(() => snapshotAt(candles, idx), [candles, idx]);
-  const bt = useMemo(() => backtest(candles, { riskPct: cfg.riskPct }), [candles]);
+const STEPS=["Read market feed","Compute structure","Reason over edge","Issue order ticket"];
 
-  const [decision, setDecision] = useState(null);
-  const [thinking, setThinking] = useState(false);
-  const [typed, setTyped] = useState("");
-  const typer = useRef(null);
+export default function AlphaDesk(){
+  const [seed,setSeed]=useState(7);
+  const candles=useMemo(()=>genCandles(seed),[seed]);
+  const cfg={riskPct:1};
+  const idx=candles.length-1;
+  const snap=useMemo(()=>snapAt(candles,idx),[candles,idx]);
+  const bt=useMemo(()=>backtest(candles,{riskPct:cfg.riskPct}),[candles]);
+  const chg=(snap.price-candles[idx-1].close)/candles[idx-1].close;
 
-  const ticket = useMemo(() => {
-    if (!decision || decision.action !== "open" || !snap.atr) return null;
-    const stopDist = (decision.stop_atr_mult || 1.5) * snap.atr;
-    const entry = snap.price;
-    const long = decision.side === "long";
-    const stop = long ? entry - stopDist : entry + stopDist;
-    const tp = long ? entry + stopDist * (decision.reward_risk || 2) : entry - stopDist * (decision.reward_risk || 2);
-    const riskAmt = bt.equity * (cfg.riskPct / 100);
-    const qty = riskAmt / stopDist;
-    return { side: decision.side, entry, stop, tp, qty, riskAmt, rr: decision.reward_risk || 2 };
-  }, [decision, snap, bt.equity]);
+  const [state,setState]=useState(STEPS.map(()=>"idle")); // idle|active|done
+  const [decision,setDecision]=useState(null);
+  const [typed,setTyped]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [clock,setClock]=useState("");
+  const typer=useRef(null);
 
-  async function run() {
-    setThinking(true); setDecision(null); setTyped("");
-    const d = await agentDecide(snap, cfg);
-    setDecision(d); setThinking(false);
+  useEffect(()=>{const t=setInterval(()=>setClock(new Date().toLocaleTimeString("en-GB")),1000);setClock(new Date().toLocaleTimeString("en-GB"));return()=>clearInterval(t);},[]);
+
+  const ticket=useMemo(()=>{
+    if(!decision||decision.action!=="open"||!snap.atr)return null;
+    const sd=(decision.stop_atr_mult||1.5)*snap.atr,entry=snap.price,long=decision.side==="long";
+    const stop=long?entry-sd:entry+sd,tp=long?entry+sd*(decision.reward_risk||2):entry-sd*(decision.reward_risk||2);
+    const riskAmt=bt.equity*(cfg.riskPct/100),qty=riskAmt/sd;
+    return{side:decision.side,entry,stop,tp,qty,riskAmt,rr:decision.reward_risk||2,notional:qty*entry};
+  },[decision,snap,bt.equity]);
+
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const setStep=(i,v)=>setState(p=>p.map((x,k)=>k===i?v:x));
+  async function run(){
+    if(busy)return;
+    setBusy(true);setDecision(null);setTyped("");setState(STEPS.map(()=>"idle"));
+    setStep(0,"active");await sleep(420);setStep(0,"done");
+    setStep(1,"active");await sleep(560);setStep(1,"done");
+    setStep(2,"active");const d=await agentDecide(snap,cfg);setStep(2,"done");
+    setStep(3,"active");setDecision(d);await sleep(260);setStep(3,"done");
+    setBusy(false);
   }
-  // typewriter reveal of the thesis
-  useEffect(() => {
-    if (!decision?.thesis) return;
-    clearInterval(typer.current);
-    let k = 0; const t = decision.thesis;
-    typer.current = setInterval(() => {
-      k++; setTyped(t.slice(0, k));
-      if (k >= t.length) clearInterval(typer.current);
-    }, 16);
-    return () => clearInterval(typer.current);
-  }, [decision]);
+  useEffect(()=>{
+    if(!decision?.thesis)return;clearInterval(typer.current);
+    let k=0;const t=decision.thesis;
+    typer.current=setInterval(()=>{k++;setTyped(t.slice(0,k));if(k>=t.length)clearInterval(typer.current);},14);
+    return()=>clearInterval(typer.current);
+  },[decision]);
 
-  const priceData = candles.slice(-90).map((c) => ({ i: c.i, price: c.close }));
-  const eqData = bt.curve.map((p) => ({ i: p.i, equity: Math.round(p.equity) }));
+  const priceData=candles.slice(-90).map(c=>({i:c.i,price:c.close}));
+  const eqData=bt.curve.map(p=>({i:p.i,equity:Math.round(p.equity)}));
 
-  return (
-    <div style={{ background: "var(--ink)", color: "var(--text)", fontFamily: "'Space Grotesk', system-ui, sans-serif" }} className="min-h-screen w-full">
+  return(
+    <div className="root">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
-        :root{
-          --ink:#0A0D13; --panel:#111722; --panel2:#0E141E; --line:#1E2735;
-          --text:#E7EBF2; --muted:#7E8AA0; --long:#2DD4A7; --short:#FB6B7C; --signal:#F5B544;
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+        .root{
+          --bg:#0B0E14; --panel:#12161F; --panel2:#0F131B; --line:#1F2632; --line2:#2B3340;
+          --text:#E7EAF1; --muted:#8A94A6; --faint:#586176;
+          --up:#34D6A0; --dn:#FF5D73; --agent:#8C8DFF; --agentdim:#2C2E52; --paper:#F3F5FA;
+          min-height:100vh; background:
+            radial-gradient(1100px 520px at 78% -8%, rgba(140,141,255,0.07), transparent 60%),
+            var(--bg);
+          color:var(--text); font-family:'Space Grotesk',system-ui,sans-serif; letter-spacing:0.01em;
         }
-        .mono{font-family:'JetBrains Mono',monospace}
-        .tapecursor::after{content:'▋';color:var(--signal);animation:bl 1s steps(2) infinite}
+        .root *{box-sizing:border-box}
+        .num{font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; font-weight:500}
+        .lab{font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color:var(--muted)}
+        .wrap{max-width:1180px; margin:0 auto; padding:18px 16px 28px}
+        .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden}
+        .card-h{display:flex; align-items:center; justify-content:space-between; gap:10px;
+          padding:11px 15px; border-bottom:1px solid var(--line)}
+        .card-t{font-size:11px; letter-spacing:0.18em; text-transform:uppercase; color:var(--muted); font-weight:600}
+        .card-b{padding:15px}
+        .chip{display:inline-flex; gap:6px; align-items:baseline; font-size:12px; background:var(--panel2);
+          border:1px solid var(--line); border-radius:999px; padding:4px 10px}
+        .runbtn{display:inline-flex; align-items:center; gap:8px; font-family:inherit; font-size:12.5px; font-weight:600;
+          letter-spacing:0.03em; padding:8px 15px; border-radius:9px; cursor:pointer; border:1px solid transparent;
+          background:var(--agent); color:#0B0B16; transition:transform .1s, filter .15s}
+        .runbtn:hover:not(:disabled){filter:brightness(1.08)} .runbtn:active{transform:scale(.97)}
+        .runbtn:disabled{background:var(--panel2); color:var(--muted); border-color:var(--line); cursor:wait}
+        .ghostbtn{width:100%; font-family:inherit; font-size:12px; font-weight:500; letter-spacing:0.04em;
+          color:var(--muted); background:transparent; border:1px solid var(--line); border-radius:10px; padding:10px; cursor:pointer; transition:.15s}
+        .ghostbtn:hover{color:var(--text); border-color:var(--line2)}
+        .pill{font-size:10.5px; letter-spacing:0.1em; padding:3px 9px; border-radius:999px; border:1px solid var(--line2)}
+        /* reasoning rail */
+        .rail{position:relative; padding-left:30px}
+        .rail::before{content:''; position:absolute; left:9px; top:6px; bottom:6px; width:2px; background:var(--line)}
+        .step{position:relative; padding:0 0 16px}
+        .step:last-child{padding-bottom:0}
+        .node{position:absolute; left:-30px; top:1px; width:20px; height:20px; border-radius:50%;
+          border:2px solid var(--line2); background:var(--panel); display:flex; align-items:center; justify-content:center; z-index:1}
+        .node.active{border-color:var(--agent); box-shadow:0 0 0 4px var(--agentdim); animation:pulse 1.1s ease-in-out infinite}
+        .node.done{border-color:var(--agent); background:var(--agent)}
+        .node .tick{color:#0B0B16; font-size:11px; line-height:1}
+        .node .dot{width:6px; height:6px; border-radius:50%; background:var(--agent)}
+        @keyframes pulse{0%,100%{box-shadow:0 0 0 4px var(--agentdim)}50%{box-shadow:0 0 0 7px transparent}}
+        .step-l{font-size:13px; font-weight:500; color:var(--text)}
+        .step.idle .step-l{color:var(--faint)}
+        .cur::after{content:'▍'; color:var(--agent); animation:bl 1s steps(2) infinite; margin-left:1px}
         @keyframes bl{50%{opacity:0}}
-        ::selection{background:rgba(245,181,68,.25)}
+        @media (prefers-reduced-motion:reduce){.node.active{animation:none}.cur::after{animation:none}}
+        .grid2{display:grid; grid-template-columns:1.6fr 1fr; gap:14px}
+        .gridf{display:grid; grid-template-columns:repeat(4,1fr); gap:14px 10px}
+        @media (max-width:840px){.grid2{grid-template-columns:1fr}.gridf{grid-template-columns:repeat(2,1fr)}}
+        ::selection{background:rgba(140,141,255,.3)}
+        .scr::-webkit-scrollbar{width:7px}.scr::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
+        a{color:var(--agent)}
       `}</style>
 
-      {/* top bar */}
-      <header style={{ borderColor: "var(--line)" }} className="border-b px-5 py-3 flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <div style={{ background: "var(--signal)" }} className="w-2.5 h-2.5 rounded-sm" />
-          <span className="font-bold tracking-tight text-[17px]">AlphaDesk</span>
-          <span className="mono text-[11px] px-1.5 py-0.5 rounded" style={{ color: "var(--signal)", border: "1px solid var(--line)" }}>autonomous agent</span>
-        </div>
-        <div className="mono text-[11px]" style={{ color: "var(--muted)" }}>BTC-USDT · perp · 4h</div>
-        <div className="ml-auto flex items-center gap-2 text-[11px] mono" style={{ color: "var(--muted)" }}>
-          <Activity size={13} style={{ color: "var(--long)" }} /> feed live
-          <span style={{ color: "var(--line)" }}>|</span>
-          Bitget AI × Crypto Hackathon
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
-        {/* LEFT — market + agent (2 cols) */}
-        <section className="lg:col-span-2 space-y-4">
-          {/* signal strip */}
-          <div style={{ background: "var(--panel)", borderColor: "var(--line)" }} className="border rounded-lg p-4">
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-y-3">
-              <Stat label="Price" value={`$${fmt(snap.price)}`} />
-              <Stat label="RSI 14" value={fmt(snap.rsi, 0)} tone={snap.rsi > 70 ? "short" : snap.rsi < 30 ? "long" : undefined} />
-              <Stat label="MACD hist" value={fmt(snap.macd?.hist, 1)} tone={snap.macd?.hist > 0 ? "long" : "short"} />
-              <Stat label="MA20 / MA50" value={snap.trend === "up" ? "bull" : snap.trend === "down" ? "bear" : "flat"} tone={snap.trend === "up" ? "long" : snap.trend === "down" ? "short" : undefined} />
-              <Stat label="ATR 14" value={fmt(snap.atr, 0)} tone="signal" />
-            </div>
+      <div className="wrap">
+        {/* top bar */}
+        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:9}}>
+            <span style={{width:13,height:13,borderRadius:4,background:"var(--agent)",display:"inline-block",transform:"rotate(45deg)"}}/>
+            <span style={{fontWeight:700,fontSize:18,letterSpacing:"-0.01em"}}>AlphaDesk</span>
           </div>
-
-          {/* price chart */}
-          <div style={{ background: "var(--panel)", borderColor: "var(--line)" }} className="border rounded-lg p-3">
-            <div className="flex items-center justify-between mb-1 px-1">
-              <span className="text-[11px] uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>Price · last 90 bars</span>
-              {ticket && <span className="mono text-[11px]" style={{ color: "var(--signal)" }}>entry {fmt(ticket.entry)} · stop {fmt(ticket.stop)} · tp {fmt(ticket.tp)}</span>}
-            </div>
-            <ResponsiveContainer width="100%" height={210}>
-              <AreaChart data={priceData} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="pg" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="var(--signal)" stopOpacity={0.28} />
-                    <stop offset="100%" stopColor="var(--signal)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="var(--line)" vertical={false} />
-                <XAxis dataKey="i" hide />
-                <YAxis domain={["auto", "auto"]} width={52} tick={{ fill: "var(--muted)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} labelStyle={{ color: "var(--muted)" }} />
-                <Area type="monotone" dataKey="price" stroke="var(--signal)" strokeWidth={1.6} fill="url(#pg)" />
-                {ticket && <ReferenceLine y={ticket.entry} stroke="var(--text)" strokeDasharray="2 3" />}
-                {ticket && <ReferenceLine y={ticket.stop} stroke="var(--short)" strokeDasharray="4 3" />}
-                {ticket && <ReferenceLine y={ticket.tp} stroke="var(--long)" strokeDasharray="4 3" />}
-              </AreaChart>
-            </ResponsiveContainer>
+          <span style={{color:"var(--muted)",fontSize:12.5}}>Autonomous Execution Terminal</span>
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,fontSize:12}}>
+            <span className="pill" style={{color:"var(--up)",borderColor:"rgba(52,214,160,.4)"}}>● Live</span>
+            <span className="num" style={{color:"var(--muted)"}}>{clock}</span>
           </div>
+        </div>
 
-          {/* THE SIGNATURE: reasoning tape -> order ticket */}
-          <div style={{ background: "var(--panel)", borderColor: "var(--line)" }} className="border rounded-lg overflow-hidden">
-            <div style={{ borderColor: "var(--line)" }} className="border-b px-4 py-2.5 flex items-center gap-2">
-              <Cpu size={15} style={{ color: "var(--signal)" }} />
-              <span className="text-[13px] font-semibold">Agent reasoning</span>
-              {decision?._src && <span className="mono text-[10px] ml-1" style={{ color: "var(--muted)" }}>· {decision._src === "claude" ? "Claude" : "local policy"}</span>}
-              <button onClick={run} disabled={thinking}
-                style={{ background: thinking ? "var(--panel2)" : "var(--signal)", color: thinking ? "var(--muted)" : "#1A1205" }}
-                className="ml-auto inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded transition active:scale-95">
-                {thinking ? <><Gauge size={13} className="animate-spin" /> reasoning…</> : <><Play size={13} /> Run agent</>}
-              </button>
-            </div>
+        <div className="grid2">
+          {/* LEFT */}
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <Card title="BTC-USDT · Perp · 4h"
+              right={<span className="num" style={{fontSize:12,color:chg>=0?"var(--up)":"var(--dn)"}}>{chg>=0?"▲":"▼"} {pc(Math.abs(chg))}</span>}>
+              <div style={{display:"flex",alignItems:"flex-end",gap:16,marginBottom:12}}>
+                <div>
+                  <div className="lab">Mark price</div>
+                  <div className="num" style={{fontSize:32,fontWeight:600,color:"var(--paper)",lineHeight:1.1,marginTop:3}}>{f(snap.price)}</div>
+                </div>
+                {ticket&&<div style={{marginLeft:"auto",display:"flex",gap:18,fontSize:12,color:"var(--muted)"}}>
+                  <span>entry <span className="num" style={{color:"var(--paper)"}}>{f(ticket.entry,0)}</span></span>
+                  <span>stop <span className="num" style={{color:"var(--dn)"}}>{f(ticket.stop,0)}</span></span>
+                  <span>tp <span className="num" style={{color:"var(--up)"}}>{f(ticket.tp,0)}</span></span>
+                </div>}
+              </div>
+              <ResponsiveContainer width="100%" height={196}>
+                <AreaChart data={priceData} margin={{top:6,right:6,left:6,bottom:0}}>
+                  <defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--agent)" stopOpacity={0.22}/>
+                    <stop offset="100%" stopColor="var(--agent)" stopOpacity={0}/>
+                  </linearGradient></defs>
+                  <CartesianGrid stroke="var(--line)" vertical={false}/>
+                  <XAxis dataKey="i" hide/>
+                  <YAxis domain={["auto","auto"]} width={52} tick={{fill:"var(--muted)",fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                  <Tooltip contentStyle={{background:"var(--panel2)",border:"1px solid var(--line2)",borderRadius:10,fontFamily:"IBM Plex Mono",fontSize:11,color:"var(--text)"}} labelStyle={{color:"var(--muted)"}}/>
+                  <Area type="monotone" dataKey="price" stroke="var(--agent)" strokeWidth={1.7} fill="url(#pg)"/>
+                  {ticket&&<ReferenceLine y={ticket.entry} stroke="var(--paper)" strokeDasharray="2 4"/>}
+                  {ticket&&<ReferenceLine y={ticket.stop} stroke="var(--dn)" strokeDasharray="5 4"/>}
+                  {ticket&&<ReferenceLine y={ticket.tp} stroke="var(--up)" strokeDasharray="5 4"/>}
+                </AreaChart>
+              </ResponsiveContainer>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+                <Chip k="RSI" v={f(snap.rsi,0)} tone={snap.rsi>70?"dn":snap.rsi<30?"up":undefined}/>
+                <Chip k="MACD" v={f(snap.macd?.hist,1)} tone={snap.macd?.hist>0?"up":"dn"}/>
+                <Chip k="MA20/50" v={snap.trend} tone={snap.trend==="up"?"up":snap.trend==="down"?"dn":undefined}/>
+                <Chip k="ATR" v={f(snap.atr,0)}/>
+              </div>
+            </Card>
 
-            <div className="px-4 py-4 min-h-[96px]">
-              {!decision && !thinking && (
-                <p className="text-[13px]" style={{ color: "var(--muted)" }}>
-                  Press <span style={{ color: "var(--signal)" }}>Run agent</span> — AlphaDesk reads the live snapshot, reasons like a desk trader, and prints a risk-defined order ticket. Capital is never put at risk without a stop.
-                </p>
-              )}
-              {thinking && <p className="text-[13px] tapecursor" style={{ color: "var(--muted)" }}>reading RSI / MACD / trend / volatility</p>}
-              {decision && (
-                <div className="space-y-3">
-                  <p className={`text-[14px] leading-relaxed ${typed.length < (decision.thesis?.length || 0) ? "tapecursor" : ""}`}>
-                    <span className="mono text-[11px] mr-2" style={{ color: "var(--signal)" }}>thesis ›</span>{typed}
-                  </p>
-                  {decision.action === "open" && ticket ? (
-                    <div style={{ background: "var(--panel2)", borderColor: decision.side === "long" ? "var(--long)" : "var(--short)" }} className="border rounded-lg">
-                      <div className="flex items-center gap-2 px-4 pt-3">
-                        {decision.side === "long" ? <TrendingUp size={16} style={{ color: "var(--long)" }} /> : <TrendingDown size={16} style={{ color: "var(--short)" }} />}
-                        <span className="font-semibold tracking-wide" style={{ color: decision.side === "long" ? "var(--long)" : "var(--short)" }}>
-                          OPEN {decision.side?.toUpperCase()}
-                        </span>
-                        <span className="ml-auto mono text-[11px]" style={{ color: "var(--muted)" }}>conf {pct(decision.confidence)}</span>
+            {/* AGENT — signature reasoning rail */}
+            <Card title="Agent reasoning"
+              right={<button className="runbtn" onClick={run} disabled={busy}>{busy?"Reasoning…":"▶ Run agent"}</button>}>
+              {state.every(s=>s==="idle")&&!busy?(
+                <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.6}}>
+                  The agent reads the live snapshot, reasons over market structure like a desk trader, and issues a
+                  risk-defined order ticket. <span style={{color:"var(--text)"}}>No position is ever opened without a stop.</span>
+                </div>
+              ):(
+                <div className="rail">
+                  {STEPS.map((label,i)=>{
+                    const st=state[i];
+                    return(<div key={i} className={`step ${st}`}>
+                      <span className={`node ${st}`}>{st==="done"?<span className="tick">✓</span>:st==="active"?<span className="dot"/>:null}</span>
+                      <div className="step-l">{label}</div>
+                      <div style={{marginTop:6}}>
+                        {i===0&&state[0]!=="idle"&&(
+                          <div style={{fontSize:12,color:"var(--muted)"}} className="num">
+                            BTC-USDT @ {f(snap.price)} · <span style={{color:chg>=0?"var(--up)":"var(--dn)"}}>{chg>=0?"+":""}{pc(chg)}</span>
+                          </div>)}
+                        {i===1&&(state[1]==="done"||state[2]!=="idle"||state[3]!=="idle")&&(
+                          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                            <Chip k="RSI" v={f(snap.rsi,0)}/><Chip k="MACD" v={f(snap.macd?.hist,1)} tone={snap.macd?.hist>0?"up":"dn"}/>
+                            <Chip k="trend" v={snap.trend} tone={snap.trend==="up"?"up":snap.trend==="down"?"dn":undefined}/><Chip k="ATR" v={f(snap.atr,0)}/>
+                          </div>)}
+                        {i===2&&decision&&(
+                          <div style={{fontSize:13,color:"var(--paper)",lineHeight:1.55}}>
+                            <span className={typed.length<(decision.thesis?.length||0)?"cur":""}>{typed}</span>
+                            {typed.length>=(decision.thesis?.length||0)&&<span style={{color:"var(--faint)",marginLeft:8,fontSize:11}}>— {decision._src}, conf {pc(decision.confidence)}</span>}
+                          </div>)}
+                        {i===2&&state[2]==="active"&&!decision&&(<div style={{fontSize:12,color:"var(--muted)"}}>weighing trend, momentum and volatility…</div>)}
+                        {i===3&&decision&&ticket&&(
+                          <div style={{marginTop:6,border:`1px solid ${ticket.side==="long"?"rgba(52,214,160,.5)":"rgba(255,93,115,.5)"}`,borderRadius:12,background:"var(--panel2)"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8,padding:"9px 13px",borderBottom:"1px solid var(--line)"}}>
+                              <span style={{fontWeight:700,letterSpacing:"0.04em",color:ticket.side==="long"?"var(--up)":"var(--dn)"}}>{ticket.side==="long"?"▲ OPEN LONG":"▼ OPEN SHORT"}</span>
+                              <span className="pill" style={{marginLeft:"auto",color:"var(--muted)"}}>Market ticket</span>
+                            </div>
+                            <div style={{padding:"13px",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"14px 10px"}}>
+                              <Field k="Entry" v={f(ticket.entry)}/><Field k="Stop" v={f(ticket.stop)} tone="dn"/>
+                              <Field k="Take profit" v={f(ticket.tp)} tone="up"/><Field k="R : R" v={`1:${ticket.rr}`} tone="ag"/>
+                              <Field k="Size · BTC" v={f(ticket.qty,4)}/><Field k="$ at risk" v={`$${f(ticket.riskAmt,0)}`}/>
+                              <Field k="Risk/trade" v={`${cfg.riskPct}%`}/><Field k="Notional" v={`$${f(ticket.notional,0)}`}/>
+                            </div>
+                          </div>)}
+                        {i===3&&decision&&decision.action!=="open"&&(
+                          <div style={{marginTop:6,border:"1px solid var(--line2)",borderRadius:12,background:"var(--panel2)",padding:"11px 13px",fontSize:12.5,color:"var(--muted)"}}>
+                            ◇ Stand aside — no trade taken. Preserving capital is a position.
+                          </div>)}
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-3 px-4 py-3">
-                        <Stat label="Entry" value={fmt(ticket.entry)} />
-                        <Stat label="Stop" value={fmt(ticket.stop)} tone="short" />
-                        <Stat label="Take profit" value={fmt(ticket.tp)} tone="long" />
-                        <Stat label="R:R" value={`1:${ticket.rr}`} tone="signal" />
-                        <Stat label="Size (BTC)" value={fmt(ticket.qty, 4)} />
-                        <Stat label="$ at risk" value={`$${fmt(ticket.riskAmt, 0)}`} />
-                        <Stat label="Risk / trade" value={`${cfg.riskPct}%`} />
-                        <Stat label="Notional" value={`$${fmt(ticket.qty * ticket.entry, 0)}`} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ background: "var(--panel2)", borderColor: "var(--line)" }} className="border rounded-lg px-4 py-3 flex items-center gap-2">
-                      <Minus size={15} style={{ color: "var(--muted)" }} />
-                      <span className="text-[13px]" style={{ color: "var(--muted)" }}>FLAT — no trade taken. Preserving capital is a position.</span>
-                    </div>
-                  )}
+                    </div>);
+                  })}
                 </div>
               )}
-            </div>
-          </div>
-        </section>
-
-        {/* RIGHT — backtest / proof of edge */}
-        <aside className="space-y-4">
-          <div style={{ background: "var(--panel)", borderColor: "var(--line)" }} className="border rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <ShieldCheck size={15} style={{ color: "var(--long)" }} />
-              <span className="text-[13px] font-semibold">Policy backtest</span>
-              <span className="mono text-[10px] ml-auto" style={{ color: "var(--muted)" }}>{bt.count} trades</span>
-            </div>
-            <ResponsiveContainer width="100%" height={140}>
-              <LineChart data={eqData} margin={{ top: 4, right: 6, left: 6, bottom: 0 }}>
-                <CartesianGrid stroke="var(--line)" vertical={false} />
-                <XAxis dataKey="i" hide />
-                <YAxis width={46} domain={["auto", "auto"]} tick={{ fill: "var(--muted)", fontSize: 9, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                <ReferenceLine y={10000} stroke="var(--muted)" strokeDasharray="2 3" />
-                <Line type="monotone" dataKey="equity" stroke={bt.totalReturn >= 0 ? "var(--long)" : "var(--short)"} strokeWidth={1.8} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-            <div className="grid grid-cols-2 gap-y-3 mt-3">
-              <Stat label="Total return" value={pct(bt.totalReturn)} tone={bt.totalReturn >= 0 ? "long" : "short"} />
-              <Stat label="Win rate" value={pct(bt.winRate)} />
-              <Stat label="Profit factor" value={fmt(bt.profitFactor, 2)} tone={bt.profitFactor >= 1 ? "long" : "short"} />
-              <Stat label="Max drawdown" value={pct(bt.maxDD)} tone="short" />
-              <Stat label="Sharpe (ann.)" value={fmt(bt.sharpe, 2)} tone="signal" />
-              <Stat label="Equity" value={`$${fmt(bt.equity, 0)}`} />
-            </div>
+            </Card>
           </div>
 
-          {/* recent trades */}
-          <div style={{ background: "var(--panel)", borderColor: "var(--line)" }} className="border rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Crosshair size={15} style={{ color: "var(--signal)" }} />
-              <span className="text-[13px] font-semibold">Trade blotter</span>
-            </div>
-            <div className="space-y-1.5 max-h-[200px] overflow-auto pr-1">
-              {bt.trades.slice(-9).reverse().map((t, k) => (
-                <div key={k} className="flex items-center justify-between mono text-[11px] py-1" style={{ borderBottom: "1px solid var(--line)" }}>
-                  <span style={{ color: t.side === "long" ? "var(--long)" : "var(--short)" }}>{t.side === "long" ? "L" : "S"} @{fmt(t.entry, 0)}</span>
-                  <span style={{ color: "var(--muted)" }}>→ {fmt(t.exit, 0)}</span>
-                  <span style={{ color: t.pnl >= 0 ? "var(--long)" : "var(--short)" }}>{t.pnl >= 0 ? "+" : ""}{fmt(t.pnl, 0)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* RIGHT */}
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <Card title="Policy backtest" right={<span className="lab">{bt.count} trades</span>}>
+              <ResponsiveContainer width="100%" height={124}>
+                <LineChart data={eqData} margin={{top:4,right:6,left:4,bottom:0}}>
+                  <CartesianGrid stroke="var(--line)" vertical={false}/>
+                  <XAxis dataKey="i" hide/>
+                  <YAxis width={50} domain={["auto","auto"]} tick={{fill:"var(--muted)",fontSize:9,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                  <ReferenceLine y={10000} stroke="var(--line2)" strokeDasharray="2 3"/>
+                  <Line type="monotone" dataKey="equity" stroke={bt.totalReturn>=0?"var(--up)":"var(--dn)"} strokeWidth={1.8} dot={false}/>
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="gridf" style={{marginTop:14}}>
+                <Field k="Return" v={pc(bt.totalReturn)} tone={bt.totalReturn>=0?"up":"dn"}/>
+                <Field k="Win rate" v={pc(bt.winRate)}/>
+                <Field k="Profit factor" v={f(bt.profitFactor,2)} tone={bt.profitFactor>=1?"up":"dn"}/>
+                <Field k="Max DD" v={pc(bt.maxDD)} tone="dn"/>
+                <Field k="Sharpe" v={f(bt.sharpe,2)} tone="ag"/>
+                <Field k="Equity" v={`$${f(bt.equity,0)}`}/>
+              </div>
+            </Card>
 
-          {/* new market */}
-          <button onClick={() => setSeed((s) => s + 1)}
-            style={{ borderColor: "var(--line)", color: "var(--muted)" }}
-            className="w-full border rounded-lg py-2.5 inline-flex items-center justify-center gap-2 text-[12px] hover:text-white transition">
-            <RotateCcw size={13} /> Resample market regime
-          </button>
-          <p className="text-[10px] leading-relaxed px-1" style={{ color: "var(--muted)" }}>
-            <Zap size={10} className="inline mb-0.5" style={{ color: "var(--signal)" }} /> Feed is a regime-switching simulation for offline demo. Swap <span className="mono">genCandles()</span> for a Bitget REST/WS feed to go live — indicator math, agent, and risk engine are unchanged.
-          </p>
-        </aside>
+            <Card title="Trade blotter">
+              <div className="scr" style={{maxHeight:188,overflowY:"auto"}}>
+                {bt.trades.slice(-10).reverse().map((t,k)=>(
+                  <div key={k} style={{display:"grid",gridTemplateColumns:"auto 1fr auto",gap:10,alignItems:"center",padding:"7px 0",borderBottom:"1px solid var(--line)"}}>
+                    <span className="pill" style={{color:t.side==="long"?"var(--up)":"var(--dn)",borderColor:t.side==="long"?"rgba(52,214,160,.35)":"rgba(255,93,115,.35)"}}>{t.side==="long"?"LONG":"SHORT"}</span>
+                    <span className="num" style={{fontSize:11.5,color:"var(--muted)"}}>{f(t.entry,0)} → {f(t.exit,0)}</span>
+                    <span className="num" style={{fontSize:12,color:t.pnl>=0?"var(--up)":"var(--dn)"}}>{t.pnl>=0?"+":""}{f(t.pnl,0)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <button className="ghostbtn" onClick={()=>setSeed(s=>s+1)}>↻ Resample market regime</button>
+          </div>
+        </div>
+
+        {/* footer status */}
+        <div style={{display:"flex",gap:18,flexWrap:"wrap",alignItems:"center",marginTop:16,paddingTop:13,borderTop:"1px solid var(--line)",fontSize:11,color:"var(--muted)"}}>
+          <span>Feed <span style={{color:"var(--text)"}}>Simulated</span></span>
+          <span>Engine <span style={{color:"var(--up)"}}>OK</span></span>
+          <span>Risk <span style={{color:"var(--text)"}}>1% / trade · ATR-stopped</span></span>
+          <span style={{marginLeft:"auto"}}>Bitget AI × Crypto Hackathon — Autonomous Trading Agents</span>
+        </div>
+        <div style={{fontSize:10.5,color:"var(--faint)",marginTop:10,lineHeight:1.6}}>
+          Feed is a regime-switching simulation for offline demo. Swap <span style={{color:"var(--agent)"}}>genCandles()</span> for a Bitget REST/WS feed to go live — indicator math, agent, and risk engine are unchanged.
+        </div>
       </div>
     </div>
   );
