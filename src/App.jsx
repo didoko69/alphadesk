@@ -3,13 +3,13 @@ import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line,
   XAxis, YAxis, ReferenceLine, CartesianGrid, Tooltip,
 } from "recharts";
-
+ 
 /* ══════════════════════════════════════════════════════════════════════════
    AlphaDesk · Autonomous Execution Terminal
    Bitget AI × Crypto Trading Hackathon — Track: Autonomous Trading Agents
    Visible reasoning · real TA math · Claude-reasoned · policy backtest
    ══════════════════════════════════════════════════════════════════════════ */
-
+ 
 /* ---------- market engine ---------- */
 function mulberry32(a){return function(){a|=0;a=(a+0x6d2b79f5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
 function gauss(r){let u=0,v=0;while(u===0)u=r();while(v===0)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
@@ -81,7 +81,7 @@ async function loadMarket(){
   if(!r.ok)throw new Error("market");
   const j=await r.json();
   if(!j.candles||j.candles.length<70)throw new Error("thin");
-  const candles=j.candles.slice().sort((a,b)=>a.ts-b.ts).map((c,i)=>({i,close:c.close}));
+  const candles=j.candles.slice().sort((a,b)=>a.ts-b.ts).map((c,i)=>({i,high:c.high,low:c.low,close:c.close}));
   return{candles,funding:j.funding,source:j.source||"bitget-live"};
 }
 async function executeOrder(side,qty){
@@ -90,7 +90,7 @@ async function executeOrder(side,qty){
 }
 const f=(n,d=1)=>n==null?"——":Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const pc=n=>n==null?"——":`${(n*100).toFixed(1)}%`;
-
+ 
 /* ---------- atoms ---------- */
 function Field({k,v,tone,big}){
   const c=tone==="up"?"var(--up)":tone==="dn"?"var(--dn)":tone==="ag"?"var(--agent)":"var(--text)";
@@ -109,9 +109,9 @@ function Card({title,right,children,style}){
     <div className="card-b">{children}</div>
   </section>);
 }
-
+ 
 const STEPS=["Read market feed","Compute structure","Reason over edge","Issue order ticket"];
-
+ 
 export default function AlphaDesk(){
   const [seed,setSeed]=useState(7);
   const [candles,setCandles]=useState(()=>genCandles(7));
@@ -124,16 +124,16 @@ export default function AlphaDesk(){
   const snap=useMemo(()=>snapAt(candles,idx),[candles,idx]);
   const bt=useMemo(()=>backtest(candles,{riskPct:cfg.riskPct}),[candles]);
   const chg=(snap.price-candles[idx-1].close)/candles[idx-1].close;
-
+ 
   const [state,setState]=useState(STEPS.map(()=>"idle")); // idle|active|done
   const [decision,setDecision]=useState(null);
   const [typed,setTyped]=useState("");
   const [busy,setBusy]=useState(false);
   const [clock,setClock]=useState("");
   const typer=useRef(null);
-
+ 
   useEffect(()=>{const t=setInterval(()=>setClock(new Date().toLocaleTimeString("en-GB")),1000);setClock(new Date().toLocaleTimeString("en-GB"));return()=>clearInterval(t);},[]);
-
+ 
   const ticket=useMemo(()=>{
     if(!decision||decision.action!=="open"||!snap.atr)return null;
     const sd=(decision.stop_atr_mult||1.5)*snap.atr,entry=snap.price,long=decision.side==="long";
@@ -141,7 +141,7 @@ export default function AlphaDesk(){
     const riskAmt=bt.equity*(cfg.riskPct/100),qty=riskAmt/sd;
     return{side:decision.side,entry,stop,tp,qty,riskAmt,rr:decision.reward_risk||2,notional:qty*entry};
   },[decision,snap,bt.equity]);
-
+ 
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const setStep=(i,v)=>setState(p=>p.map((x,k)=>k===i?v:x));
   async function run(){
@@ -164,10 +164,10 @@ export default function AlphaDesk(){
     typer.current=setInterval(()=>{k++;setTyped(t.slice(0,k));if(k>=t.length)clearInterval(typer.current);},14);
     return()=>clearInterval(typer.current);
   },[decision]);
-
+ 
   const priceData=candles.slice(-90).map(c=>({i:c.i,price:c.close}));
   const eqData=bt.curve.map(p=>({i:p.i,equity:Math.round(p.equity)}));
-
+ 
   return(
     <div className="root">
       <style>{`
@@ -225,7 +225,7 @@ export default function AlphaDesk(){
         .scr::-webkit-scrollbar{width:7px}.scr::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
         a{color:var(--agent)}
       `}</style>
-
+ 
       <div className="wrap">
         {/* top bar */}
         <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
@@ -239,7 +239,7 @@ export default function AlphaDesk(){
             <span className="num" style={{color:"var(--muted)"}}>{clock}</span>
           </div>
         </div>
-
+ 
         <div className="grid2">
           {/* LEFT */}
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -279,7 +279,7 @@ export default function AlphaDesk(){
                 <Chip k="ATR" v={f(snap.atr,0)}/>
               </div>
             </Card>
-
+ 
             {/* AGENT — signature reasoning rail */}
             <Card title="Agent reasoning"
               right={<button className="runbtn" onClick={run} disabled={busy}>{busy?"Reasoning…":"▶ Run agent"}</button>}>
@@ -338,7 +338,7 @@ export default function AlphaDesk(){
               )}
             </Card>
           </div>
-
+ 
           {/* RIGHT */}
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <Card title="Policy backtest" right={<span className="lab">{bt.count} trades</span>}>
@@ -360,7 +360,7 @@ export default function AlphaDesk(){
                 <Field k="Equity" v={`$${f(bt.equity,0)}`}/>
               </div>
             </Card>
-
+ 
             <Card title="Trade blotter">
               <div className="scr" style={{maxHeight:188,overflowY:"auto"}}>
                 {bt.trades.slice(-10).reverse().map((t,k)=>(
@@ -372,11 +372,11 @@ export default function AlphaDesk(){
                 ))}
               </div>
             </Card>
-
+ 
             <button className="ghostbtn" onClick={()=>setSeed(s=>s+1)}>↻ Resample market regime</button>
           </div>
         </div>
-
+ 
         {/* footer status */}
         <div style={{display:"flex",gap:18,flexWrap:"wrap",alignItems:"center",marginTop:16,paddingTop:13,borderTop:"1px solid var(--line)",fontSize:11,color:"var(--muted)"}}>
           <span>Feed <span style={{color:source==="sim"?"var(--text)":"var(--up)"}}>{source==="sim"?"Simulated":"Bitget live"}</span></span>
@@ -391,3 +391,4 @@ export default function AlphaDesk(){
     </div>
   );
 }
+ 
