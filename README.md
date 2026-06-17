@@ -1,90 +1,65 @@
 # AlphaDesk — Autonomous AI Trading Agent
 
-**Bitget AI × Crypto Trading Hackathon · Track: Autonomous Trading Agents**
+**Bitget AI × Crypto Trading Hackathon · Track: Trading Agent** — built on **Bitget Agent Hub**.
 
-An autonomous trading agent that reads live market structure, reasons over it like
-a disciplined futures desk, and prints **risk-defined order tickets** — never a
-position without a stop. The same trading policy is **backtested in-app** so the
-edge is measurable, not asserted.
+An autonomous agent that reads live Bitget market structure, reasons like a
+disciplined desk trader, and issues **risk-defined order tickets** — never a
+position without a stop. It runs the full closed loop:
 
-> Live demo: `<paste your published demo link here>`
-> Demo video: `<paste your video link here>`
+> **Perception → Decision → Execution → Risk → Exit**
+
+> Live demo: `https://alphadessk.netlify.app/` · Repo: `https://github.com/didoko69/alphadesk`
 
 ---
 
-## The problem
+## The loop
 
-Most "AI trading" tools either (a) wrap an LLM around a price feed and let it
-hand-wave a direction with no risk management, or (b) are black-box bots a user
-can't reason about. Neither is safe to put capital behind.
+| Stage | How it works | Bitget Agent Hub |
+|------|---------------|------------------|
+| **Perception** | Live BTC-USDT perp candles + funding → RSI / MACD / MA-trend / ATR | `bitget-core` → `/api/v2/mix/market/candles`, `current-fund-rate` (Skill Hub patterns: `technical-analysis`, `sentiment-analyst`) |
+| **Decision** | The agent reasons over the snapshot and issues `open` (long/short) or `flat`, with a plain-English thesis | LLM agent, run server-side on the deploy |
+| **Execution** | Risk-defined ticket routed to Bitget in **paper** mode | `bitget-core` → `/api/v2/mix/order/place-order` (`paperTrading`) |
+| **Risk** | Position sized from volatility at 1% account risk, ATR stop, R:R take-profit | — |
+| **Exit** | Stop / take-profit levels set on every ticket | — |
 
-**AlphaDesk** treats the LLM as a *desk trader under risk limits*: it must justify
-a trade from real indicators and must attach a stop, take-profit, and position
-size derived from volatility before any ticket is issued.
-
-## What it does
-
-- **Reads market structure** — RSI(14), MACD(12/26/9), MA20/MA50 trend, ATR(14).
-- **Reasons** — the agent evaluates the snapshot and decides `open` (long/short)
-  or `flat`. Conflicting/weak signals → it stands aside.
-- **Defines risk first** — every ticket sizes the position from a fixed % account
-  risk and an ATR-based stop, with an R:R-multiple take-profit.
-- **Proves the edge** — the same deterministic policy is run over the full price
-  history; the app reports total return, win rate, profit factor, max drawdown,
-  and an annualised Sharpe.
+The **policy backtest** (return, win rate, profit factor, max drawdown, Sharpe)
+gives verifiable, measurable edge — not assertions.
 
 ## Architecture
 
 ```
-market feed ──▶ indicator engine ──▶ snapshot ──┬─▶ agent (reason → decision)
- (OHLC)         RSI/MACD/MA/ATR                  │      └─▶ risk engine ──▶ order ticket
-                                                 └─▶ backtest (same policy) ──▶ stats + equity curve
+React (Vite) ──┬─ /api/market   → bitget-core → Bitget perp candles + funding   (perception)
+               ├─ /api/decide   → agent reasoning via LLM key                     (decision)
+               └─ /api/execute  → bitget-core → Bitget place-order (paper)         (execution)
+Netlify Functions hold every key server-side; the browser never sees a secret.
+If the backend is offline, the app falls back to in-app reasoning so it always runs.
 ```
-
-- `genCandles()` — regime-switching market simulator (trend/down/chop) for a
-  reliable offline demo.
-- `snapshotAt()` — computes all indicators at a bar.
-- `policy()` — the deterministic trading policy that is backtested.
-- `agentDecide()` — LLM reasoning layer (returns a structured JSON decision);
-  falls back to `policy()` if the model is unreachable, so the agent always
-  produces a safe, auditable decision.
-- `backtest()` — event loop over history with stop/TP fills and full risk sizing.
-
-## Risk engine (the core)
-
-```
-stop_distance = atr_mult × ATR
-position_size = (equity × risk_pct) ÷ stop_distance
-take_profit   = entry ± stop_distance × reward_risk
-```
-
-Capital risked per trade is fixed; size floats with volatility. This is the part
-that separates a trading *agent* from a chatbot guessing direction.
 
 ## Run locally
 
 ```bash
 npm install
-npm run dev
+npm run dev          # frontend (Vite)
+# full stack incl. functions:  npm i -g netlify-cli && netlify dev
 ```
 
-Open the printed local URL. Press **Run agent** to get a decision + ticket; the
-right panel shows the backtest. Tailwind ships via Play CDN, so there's no build
-config to fight.
+## Deploy (Netlify)
 
-> **Note on the reasoning layer:** the hosted demo runs the live LLM-powered
-> agent. Run locally, the browser call to the model is sandboxed, so the agent
-> uses the bundled deterministic `policy()` — the *same* strategy that is
-> backtested. To enable live LLM reasoning in your own deployment, route
-> `agentDecide()` through a small server proxy holding your API key.
+Connect the repo. Build `npm run build`, publish `dist`; functions auto-detected from `netlify.toml`. Set env vars:
 
-## Roadmap to live trading
+```
+# LLM — Anthropic OR any OpenAI-compatible endpoint (e.g. Alibaba Qwen / DashScope)
+ANTHROPIC_API_KEY=...            # or:
+LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+LLM_API_KEY=...
+LLM_MODEL=qwen-plus
 
-1. Replace `genCandles()` with a Bitget REST/WS candle feed (indicators, agent,
-   and risk engine are untouched).
-2. Route order tickets to the Bitget API in paper mode, then live with caps.
-3. Persist trade history and expose a kill-switch + daily loss limit.
+# Bitget (optional — enables real paper-order routing; market data needs none)
+BITGET_API_KEY=...
+BITGET_SECRET_KEY=...
+BITGET_PASSPHRASE=...
+```
 
 ## Tech
 
-React · Vite · Recharts · Lucide. No secrets in the client.
+React · Vite · Recharts · Netlify Functions · **bitget-core** (Bitget Agent Hub). MIT.

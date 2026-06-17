@@ -55,6 +55,12 @@ function backtest(c,{riskPct=1,atrStop=1.5,rr=2,equity0=10000}={}){
   return{equity:eq,curve,trades,winRate:trades.length?w.length/trades.length:0,profitFactor:gl?gw/gl:gw>0?99:0,maxDD:mdd,totalReturn:(eq-equity0)/equity0,sharpe:(mean/sd)*Math.sqrt(rets.length),count:trades.length};
 }
 async function agentDecide(s,cfg){
+  // 1) backend — runs live on the deployed site with the LLM key (perception built on Bitget Agent Hub)
+  try{
+    const r=await fetch("/api/decide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({snapshot:s,riskPct:cfg.riskPct})});
+    if(r.ok){const j=await r.json();if(!j.error&&j.action)return{...j,_src:j._src||"Agent · live"};}
+  }catch(e){}
+  // 2) in-artifact direct reasoning (works in the chat preview)
   const sys="You are AlphaDesk, a disciplined crypto perpetual-futures trading agent. You only take trades with a clear technical edge and ALWAYS define risk. Given a market snapshot, decide ONE action. Respond with ONLY a JSON object, no prose, no markdown fences. Schema: {\"action\":\"open\"|\"flat\",\"side\":\"long\"|\"short\",\"confidence\":0-1,\"stop_atr_mult\":number,\"reward_risk\":number,\"thesis\":\"<=34 words, terse desk-trader voice\"}. If signals conflict or are weak, action='flat'.";
   const u=`BTC-USDT perp snapshot: price=${s.price.toFixed(1)} RSI14=${s.rsi?.toFixed(1)} MACDhist=${s.macd?.hist?.toFixed(2)} MA20=${s.ma20?.toFixed(1)} MA50=${s.ma50?.toFixed(1)} trend=${s.trend} ATR14=${s.atr?.toFixed(1)} risk=${cfg.riskPct}%/trade. Decide.`;
   try{
@@ -69,6 +75,18 @@ async function agentDecide(s,cfg){
     return p.side?{action:"open",side:p.side,confidence:p.conf,stop_atr_mult:1.5,reward_risk:2,thesis:`${p.side==="long"?"Uptrend":"Downtrend"} confirmed by MACD and RSI alignment — taking the trend with fixed, predefined risk.`,_src:"Local policy"}
       :{action:"flat",confidence:0.3,thesis:"Signals are in conflict — standing aside to protect capital.",_src:"Local policy"};
   }
+}
+async function loadMarket(){
+  const r=await fetch("/api/market?symbol=BTCUSDT&granularity=4H&limit=250");
+  if(!r.ok)throw new Error("market");
+  const j=await r.json();
+  if(!j.candles||j.candles.length<70)throw new Error("thin");
+  const candles=j.candles.slice().sort((a,b)=>a.ts-b.ts).map((c,i)=>({i,close:c.close}));
+  return{candles,funding:j.funding,source:j.source||"bitget-live"};
+}
+async function executeOrder(side,qty){
+  try{const r=await fetch("/api/execute",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket:{symbol:"BTCUSDT",side,size:Number(qty.toFixed(4))}})});
+    if(!r.ok)throw 0;return await r.json();}catch(e){return{mode:"simulated"};}
 }
 const f=(n,d=1)=>n==null?"——":Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const pc=n=>n==null?"——":`${(n*100).toFixed(1)}%`;
@@ -96,7 +114,11 @@ const STEPS=["Read market feed","Compute structure","Reason over edge","Issue or
 
 export default function AlphaDesk(){
   const [seed,setSeed]=useState(7);
-  const candles=useMemo(()=>genCandles(seed),[seed]);
+  const [candles,setCandles]=useState(()=>genCandles(7));
+  const [source,setSource]=useState("sim");
+  const [funding,setFunding]=useState(null);
+  const [exec,setExec]=useState(null);
+  useEffect(()=>{(async()=>{try{const m=await loadMarket();if(m.candles.length>70){setCandles(m.candles);setSource(m.source);setFunding(m.funding);}}catch(e){}})();},[]);
   const cfg={riskPct:1};
   const idx=candles.length-1;
   const snap=useMemo(()=>snapAt(candles,idx),[candles,idx]);
@@ -128,7 +150,12 @@ export default function AlphaDesk(){
     setStep(0,"active");await sleep(420);setStep(0,"done");
     setStep(1,"active");await sleep(560);setStep(1,"done");
     setStep(2,"active");const d=await agentDecide(snap,cfg);setStep(2,"done");
-    setStep(3,"active");setDecision(d);await sleep(260);setStep(3,"done");
+    setStep(3,"active");setDecision(d);
+    if(d.action==="open"&&d.side&&snap.atr){
+      const sd=(d.stop_atr_mult||1.5)*snap.atr,qty=(bt.equity*(cfg.riskPct/100))/sd;
+      setExec(await executeOrder(d.side,qty));
+    }else setExec(null);
+    await sleep(260);setStep(3,"done");
     setBusy(false);
   }
   useEffect(()=>{
@@ -208,7 +235,7 @@ export default function AlphaDesk(){
           </div>
           <span style={{color:"var(--muted)",fontSize:12.5}}>Autonomous Execution Terminal</span>
           <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,fontSize:12}}>
-            <span className="pill" style={{color:"var(--up)",borderColor:"rgba(52,214,160,.4)"}}>● Live</span>
+            <span className="pill" style={{color:source==="sim"?"var(--muted)":"var(--up)",borderColor:source==="sim"?"var(--line2)":"rgba(52,214,160,.4)"}}>{source==="sim"?"◷ Sim feed":"● Bitget live"}</span>
             <span className="num" style={{color:"var(--muted)"}}>{clock}</span>
           </div>
         </div>
@@ -296,6 +323,9 @@ export default function AlphaDesk(){
                               <Field k="Size · BTC" v={f(ticket.qty,4)}/><Field k="$ at risk" v={`$${f(ticket.riskAmt,0)}`}/>
                               <Field k="Risk/trade" v={`${cfg.riskPct}%`}/><Field k="Notional" v={`$${f(ticket.notional,0)}`}/>
                             </div>
+                            {exec&&<div style={{padding:"8px 13px",borderTop:"1px solid var(--line)",fontSize:11.5,color:"var(--muted)"}}>
+                              <span style={{color:exec.mode==="paper"?"var(--up)":exec.mode==="simulated"?"var(--muted)":"var(--agent)"}}>⇄ Bitget Tools API</span> — {exec.mode==="paper"?`paper order routed${exec.order?.orderId?` · id ${String(exec.order.orderId).slice(0,10)}…`:""}`:exec.mode==="simulated"?"order simulated — set BITGET_* keys to route a real paper order":"execution offline"}
+                            </div>}
                           </div>)}
                         {i===3&&decision&&decision.action!=="open"&&(
                           <div style={{marginTop:6,border:"1px solid var(--line2)",borderRadius:12,background:"var(--panel2)",padding:"11px 13px",fontSize:12.5,color:"var(--muted)"}}>
@@ -349,13 +379,13 @@ export default function AlphaDesk(){
 
         {/* footer status */}
         <div style={{display:"flex",gap:18,flexWrap:"wrap",alignItems:"center",marginTop:16,paddingTop:13,borderTop:"1px solid var(--line)",fontSize:11,color:"var(--muted)"}}>
-          <span>Feed <span style={{color:"var(--text)"}}>Simulated</span></span>
+          <span>Feed <span style={{color:source==="sim"?"var(--text)":"var(--up)"}}>{source==="sim"?"Simulated":"Bitget live"}</span></span>
           <span>Engine <span style={{color:"var(--up)"}}>OK</span></span>
           <span>Risk <span style={{color:"var(--text)"}}>1% / trade · ATR-stopped</span></span>
           <span style={{marginLeft:"auto"}}>Bitget AI × Crypto Hackathon — Autonomous Trading Agents</span>
         </div>
         <div style={{fontSize:10.5,color:"var(--faint)",marginTop:10,lineHeight:1.6}}>
-          Feed is a regime-switching simulation for offline demo. Swap <span style={{color:"var(--agent)"}}>genCandles()</span> for a Bitget REST/WS feed to go live — indicator math, agent, and risk engine are unchanged.
+          Perception built on Bitget Agent Hub (live perp candles + funding), the agent runs live on the deployed backend (decision), the order routes to Bitget's Tools API in paper mode (execution), risk is volatility-sized at 1% with an ATR stop, and the policy is backtested for verifiable edge. Falls back to in-app reasoning when the backend is offline.
         </div>
       </div>
     </div>
